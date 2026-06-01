@@ -4,5 +4,6 @@ __pycache__/
 *.pyc
 *.pyo
 build/PlaylistConverter/
+build/app/
 dist/
 *.spec.bak
