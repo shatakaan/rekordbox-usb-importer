@@ -84,12 +84,12 @@ Plans:
 5. If the import is cancelled or the app crashes mid-run, the local Rekordbox database is left completely unchanged (no orphaned rows, no partial playlists)
 6. Tracks already present in the local library are flagged before import starts; user can choose to skip or import each duplicate individually
 
-**Plans:** 5 plans
+**Plans:** 1/5 plans complete
 Plans:
 
 **Wave 1** *(parallel)*
 
-- [ ] 02-01-PLAN.md — Datenschicht + Test-Scaffold: TrackRow.analyze_path, pdb_parser str_offs[14], Wave-0-Tests (conftest, test_import_controller Stubs, test_duplicate_detector Stubs)
+- [x] 02-01-PLAN.md — Datenschicht + Test-Scaffold: TrackRow.analyze_path, pdb_parser str_offs[14], Wave-0-Tests (conftest, test_import_controller Stubs, test_duplicate_detector Stubs) (completed 2026-06-02)
 - [ ] 02-02-PLAN.md — Import-Core: ImportController (Prozess-Guard, Backup, Duplikat-Detection, DB-Write-Logik), DuplicateDetector, alle Kern-Unit-Tests
 
 **Wave 3** *(blocked auf Wave 2 / Wave 1 parallel)*
@@ -131,5 +131,5 @@ Phases execute in numeric order: 1 → 2 → 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. USB Read Display + Bundling Spike | 6/6 | Complete    | 2026-06-02 |
-| 2. Full Import Pipeline | 0/5 | Planned | - |
+| 2. Full Import Pipeline | 1/5 | In Progress | - |
 | 3. Polish + Distribution | 0/? | Not started | - |
