@@ -194,3 +194,259 @@ def test_bpm_scaling(mock_rb6_db, usb_mount, make_track_row):
     assert bpm_value == 12800, (
         f"Expected BPM=12800 (128.0 * 100) passed to add_content, got: {bpm_value!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Cue Point Import Tests (Plan 02-03)
+# ---------------------------------------------------------------------------
+
+def test_cue_import_from_ext(mock_rb6_db, usb_mount, make_track_row):
+    """_import_cues reads PCO2 from .EXT file and calls db.add() for each entry.
+
+    When .EXT file exists, ONLY PCO2 is used — .DAT (PCOB) is never read.
+    This enforces Pitfall 6: never write both PCOB and PCO2 for the same track.
+
+    Requirements: D-08, D-09, META-01, META-02
+    """
+    import unittest.mock as mock
+    from pathlib import Path
+    from unittest.mock import MagicMock, patch
+
+    # Create fake ANLZ directory and files in usb_mount
+    anlz_dir = usb_mount / "PIONEER" / "USBANLZ" / "d44" / "abcd-1234"
+    anlz_dir.mkdir(parents=True, exist_ok=True)
+    dat_path = anlz_dir / "ANLZ0000.DAT"
+    ext_path = anlz_dir / "ANLZ0000.EXT"
+    dat_path.write_bytes(b"")
+    ext_path.write_bytes(b"")
+
+    relative_anlz = "/PIONEER/USBANLZ/d44/abcd-1234/ANLZ0000.DAT"
+    track = make_track_row(
+        file_path="/Contents/test.mp3",
+        analyze_path=relative_anlz,
+    )
+
+    # Build mock AnlzFile for .EXT with PCO2 entries
+    entry1 = MagicMock()
+    entry1.hot_cue = 1
+    entry1.time = 10000
+    entry1.loop_time = -1
+    entry1.comment = "Drop"
+
+    entry2 = MagicMock()
+    entry2.hot_cue = 0
+    entry2.time = 5000
+    entry2.loop_time = -1
+    entry2.comment = ""
+
+    mock_tag = MagicMock()
+    mock_tag.data.entries = [entry1, entry2]
+
+    mock_anlz_ext = MagicMock()
+    mock_anlz_ext.__contains__ = MagicMock(side_effect=lambda k: k == "PCO2")
+    mock_anlz_ext.get_tag.return_value = mock_tag
+
+    mock_content = MagicMock()
+    mock_content.ID = "content-id-1"
+    mock_content.UUID = "content-uuid-1"
+    mock_rb6_db.add_content.return_value = mock_content
+
+    controller = ImportController(db=mock_rb6_db, usb_mount=usb_mount)
+
+    with patch("core.import_controller.AnlzFile.parse_file", return_value=mock_anlz_ext) as mock_parse:
+        with mock.patch("core.import_controller.get_rekordbox_pid", return_value=0):
+            controller.run_import(tracks=[track], playlist_name="TestPlaylist")
+
+    # parse_file should be called with .EXT path (not .DAT for cues)
+    assert mock_parse.called, "_import_cues must call AnlzFile.parse_file"
+    called_path = str(mock_parse.call_args[0][0])
+    assert called_path.endswith(".EXT"), (
+        f"When .EXT exists, parse_file must be called with .EXT path, got: {called_path}"
+    )
+
+    # db.add() must be called twice (once per cue entry)
+    add_calls = mock_rb6_db.add.call_count
+    assert add_calls >= 2, (
+        f"Expected db.add() called at least 2 times for 2 PCO2 entries, got: {add_calls}"
+    )
+
+
+def test_cue_import_dat_fallback(mock_rb6_db, usb_mount, make_track_row):
+    """_import_cues falls back to .DAT (PCOB) when .EXT file does not exist.
+
+    Only entries with status.intvalue == 4 (enabled) are imported from PCOB.
+
+    Requirements: D-08, D-09, META-01, META-02
+    """
+    import unittest.mock as mock
+    from unittest.mock import MagicMock, patch
+
+    # Create ONLY the .DAT file — no .EXT
+    anlz_dir = usb_mount / "PIONEER" / "USBANLZ" / "d44" / "abcd-5678"
+    anlz_dir.mkdir(parents=True, exist_ok=True)
+    dat_path = anlz_dir / "ANLZ0000.DAT"
+    dat_path.write_bytes(b"")
+    # .EXT intentionally NOT created
+
+    relative_anlz = "/PIONEER/USBANLZ/d44/abcd-5678/ANLZ0000.DAT"
+    track = make_track_row(
+        file_path="/Contents/test.mp3",
+        analyze_path=relative_anlz,
+    )
+
+    # One enabled entry, one disabled entry
+    enabled_entry = MagicMock()
+    enabled_entry.hot_cue = 1
+    enabled_entry.time = 8000
+    enabled_entry.loop_time = -1
+    enabled_entry.status.intvalue = 4   # enabled
+
+    disabled_entry = MagicMock()
+    disabled_entry.hot_cue = 2
+    disabled_entry.time = 9000
+    disabled_entry.loop_time = -1
+    disabled_entry.status.intvalue = 0  # disabled — must NOT be imported
+
+    mock_tag = MagicMock()
+    mock_tag.data.entries = [enabled_entry, disabled_entry]
+
+    mock_anlz_dat = MagicMock()
+    mock_anlz_dat.__contains__ = MagicMock(side_effect=lambda k: k == "PCOB")
+    mock_anlz_dat.get_tag.return_value = mock_tag
+
+    mock_content = MagicMock()
+    mock_content.ID = "content-id-2"
+    mock_content.UUID = "content-uuid-2"
+    mock_rb6_db.add_content.return_value = mock_content
+
+    controller = ImportController(db=mock_rb6_db, usb_mount=usb_mount)
+
+    with patch("core.import_controller.AnlzFile.parse_file", return_value=mock_anlz_dat) as mock_parse:
+        with mock.patch("core.import_controller.get_rekordbox_pid", return_value=0):
+            controller.run_import(tracks=[track], playlist_name="TestPlaylist")
+
+    # parse_file called with .DAT path (no .EXT exists)
+    assert mock_parse.called, "_import_cues must call AnlzFile.parse_file"
+    called_path = str(mock_parse.call_args[0][0])
+    assert called_path.endswith(".DAT"), (
+        f"When only .DAT exists, parse_file must be called with .DAT, got: {called_path}"
+    )
+
+    # Only the enabled entry should result in db.add()
+    add_calls = mock_rb6_db.add.call_count
+    assert add_calls == 1, (
+        f"Expected exactly 1 db.add() call (enabled entry only), got: {add_calls}"
+    )
+
+
+def test_cue_missing_anlz_logs_warning(mock_rb6_db, usb_mount, make_track_row, caplog):
+    """When analyze_path is None, log warning and do not call db.add() for cues.
+
+    Non-blocking per D-10: track is still imported, just without cue points.
+    """
+    import logging
+    import unittest.mock as mock
+    from unittest.mock import MagicMock, patch
+
+    track_no_path = make_track_row(
+        file_path="/Contents/test.mp3",
+        analyze_path=None,  # No analyze_path
+    )
+
+    mock_content = MagicMock()
+    mock_rb6_db.add_content.return_value = mock_content
+
+    controller = ImportController(db=mock_rb6_db, usb_mount=usb_mount)
+
+    with patch("core.import_controller.AnlzFile.parse_file") as mock_parse:
+        with mock.patch("core.import_controller.get_rekordbox_pid", return_value=0):
+            with caplog.at_level(logging.WARNING):
+                controller.run_import(tracks=[track_no_path], playlist_name="TestPlaylist")
+
+    # parse_file must NOT be called when analyze_path is None
+    assert not mock_parse.called, (
+        "AnlzFile.parse_file must not be called when analyze_path is None"
+    )
+
+    # db.add() must NOT be called (no cues to write)
+    assert mock_rb6_db.add.call_count == 0, (
+        "db.add() must not be called for cues when analyze_path is None"
+    )
+
+    # A WARNING must be logged
+    warning_logs = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warning_logs) >= 1, (
+        "Expected at least one WARNING log when analyze_path is None; got none.\n"
+        f"All log records: {[r.message for r in caplog.records]}"
+    )
+
+
+def test_cue_kind_mapping(mock_rb6_db, usb_mount, make_track_row):
+    """Memory Cue (hot_cue=0) produces DjmdCue with Kind=0; Hot Cue (hot_cue=1) -> Kind=1.
+
+    Verifies Assumption A1/A2 from RESEARCH.md: Kind matches hot_cue field value.
+    """
+    import unittest.mock as mock
+    from unittest.mock import MagicMock, patch
+
+    # Create .EXT file so PCO2 path is taken
+    anlz_dir = usb_mount / "PIONEER" / "USBANLZ" / "d44" / "abcd-kind"
+    anlz_dir.mkdir(parents=True, exist_ok=True)
+    (anlz_dir / "ANLZ0000.DAT").write_bytes(b"")
+    (anlz_dir / "ANLZ0000.EXT").write_bytes(b"")
+
+    relative_anlz = "/PIONEER/USBANLZ/d44/abcd-kind/ANLZ0000.DAT"
+    track = make_track_row(
+        file_path="/Contents/test.mp3",
+        analyze_path=relative_anlz,
+    )
+
+    memory_entry = MagicMock()
+    memory_entry.hot_cue = 0   # Memory Cue
+    memory_entry.time = 3000
+    memory_entry.loop_time = -1
+    memory_entry.comment = ""
+
+    hot_entry = MagicMock()
+    hot_entry.hot_cue = 1    # Hot Cue Slot 1
+    hot_entry.time = 7000
+    hot_entry.loop_time = -1
+    hot_entry.comment = "Chorus"
+
+    mock_tag = MagicMock()
+    mock_tag.data.entries = [memory_entry, hot_entry]
+
+    mock_anlz = MagicMock()
+    mock_anlz.__contains__ = MagicMock(side_effect=lambda k: k == "PCO2")
+    mock_anlz.get_tag.return_value = mock_tag
+
+    mock_content = MagicMock()
+    mock_content.ID = "content-id-3"
+    mock_content.UUID = "content-uuid-3"
+    mock_rb6_db.add_content.return_value = mock_content
+
+    # Capture what DjmdCue.create receives
+    created_cues = []
+
+    def capture_create(**kwargs):
+        created_cues.append(kwargs)
+        return MagicMock()
+
+    controller = ImportController(db=mock_rb6_db, usb_mount=usb_mount)
+
+    with patch("core.import_controller.AnlzFile.parse_file", return_value=mock_anlz):
+        with patch("core.import_controller.DjmdCue.create", side_effect=capture_create):
+            with mock.patch("core.import_controller.get_rekordbox_pid", return_value=0):
+                controller.run_import(tracks=[track], playlist_name="TestPlaylist")
+
+    assert len(created_cues) == 2, (
+        f"Expected DjmdCue.create called twice, got {len(created_cues)} times"
+    )
+
+    kinds = [c["Kind"] for c in created_cues]
+    assert 0 in kinds, (
+        f"Expected Kind=0 (Memory Cue) among created cues; got kinds={kinds}"
+    )
+    assert 1 in kinds, (
+        f"Expected Kind=1 (Hot Cue Slot 1) among created cues; got kinds={kinds}"
+    )
