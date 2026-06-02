@@ -12,6 +12,7 @@ Safety requirements:
   SAFE-03: Log backup path before and after import
   SAFE-04: db.rollback() on any exception during write
   T-02-02-01: Path traversal guard — resolved USB path must start with mount point
+  T-02-03-01: analyze_path traversal guard — resolved ANLZ path must start with mount point
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ from enum import Enum
 from pathlib import Path
 from uuid import uuid4
 
+from pyrekordbox.anlz import AnlzFile
+from pyrekordbox.db6.tables import DjmdCue
 from pyrekordbox.utils import get_rekordbox_pid, get_rekordbox_agent_pid
 
 from core.duplicate_detector import check_duplicate
@@ -218,6 +221,9 @@ class ImportController:
                         FileNameS=abs_path.stem[:255],
                     )
                     self.db.add_to_playlist(db_playlist, content)
+                    # Import cue points from ANLZ file (D-08, D-09)
+                    cue_count = self._import_cues(self.db, content, track, self.mount)
+                    logger.info("Track '%s': %d cues imported", track.title, cue_count)
                     result.imported_count += 1
                 except Exception:
                     result.failed_count += 1
@@ -236,6 +242,111 @@ class ImportController:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _import_cues(self, db, content, track, mount: Path) -> int:
+        """Read ANLZ cue points for a track and write DjmdCue objects to the local DB.
+
+        Strategy (Pitfall 6 — never write both PCOB and PCO2 for the same track):
+          - If .EXT file exists: read PCO2 tag only (better metadata: colour, label).
+          - If only .DAT file exists: read PCOB tag, filter entries with status==4 (enabled).
+
+        Path-traversal guard (T-02-03-01): resolved ANLZ path must start with mount point.
+
+        Args:
+            db:      Rekordbox6Database instance.
+            content: DjmdContent object for the newly-imported track.
+            track:   TrackRow with an analyze_path field.
+            mount:   Path to the USB mount point.
+
+        Returns:
+            Number of DjmdCue objects written (0 when ANLZ is unavailable).
+        """
+        # -- Precondition: analyze_path must be present -----------------------
+        if not track.analyze_path:
+            logger.warning(
+                "Track '%s': no analyze_path — imported without cues",
+                track.title,
+            )
+            return 0
+
+        # -- Resolve absolute ANLZ path ---------------------------------------
+        dat_path = (mount / track.analyze_path.lstrip("/")).resolve()
+
+        # T-02-03-01: path traversal guard
+        mount_resolved = str(mount.resolve())
+        if not str(dat_path).startswith(mount_resolved):
+            logger.warning(
+                "Track '%s': analyze_path '%s' resolves outside USB mount — skipping cues",
+                track.title,
+                track.analyze_path,
+            )
+            return 0
+
+        if not dat_path.exists():
+            logger.warning(
+                "Track '%s': ANLZ file not found at %s — imported without cues",
+                track.title,
+                dat_path,
+            )
+            return 0
+
+        # -- Choose .EXT (PCO2) or .DAT (PCOB) — never both (Pitfall 6) ------
+        ext_path = dat_path.with_suffix(".EXT")
+        use_ext = ext_path.exists()
+
+        if use_ext:
+            anlz = AnlzFile.parse_file(ext_path)
+            tag_key = "PCO2"
+        else:
+            anlz = AnlzFile.parse_file(dat_path)
+            tag_key = "PCOB"
+
+        if tag_key not in anlz:
+            return 0  # no cue data in this file
+
+        tag = anlz.get_tag(tag_key)
+        cue_count = 0
+
+        for entry in tag.data.entries:
+            # PCOB entries have a status field; PCO2 entries are always enabled
+            if tag_key == "PCOB" and entry.status.intvalue != 4:
+                continue
+
+            kind = entry.hot_cue  # 0 = Memory Cue, 1..8 = Hot Cue Slot
+            in_msec = entry.time
+            out_msec = getattr(entry, "loop_time", -1)
+            if out_msec is None:
+                out_msec = -1
+            comment = getattr(entry, "comment", "") or ""
+
+            id_ = db.generate_unused_id(DjmdCue)
+            cue_uuid = str(uuid4())
+
+            cue = DjmdCue.create(
+                ID=id_,
+                UUID=cue_uuid,
+                ContentID=content.ID,
+                ContentUUID=content.UUID,
+                Kind=kind,
+                InMsec=in_msec,
+                OutMsec=out_msec,
+                Comment=comment,
+                Color=-1,
+                ActiveLoop=0,
+                InFrame=0,
+                InMpegFrame=0,
+                InMpegAbs=0,
+                OutFrame=0,
+                OutMpegFrame=0,
+                OutMpegAbs=0,
+                ColorTableIndex=0,
+                BeatLoopSize=0,
+                CueMicrosec=in_msec * 1000,
+            )
+            db.add(cue)
+            cue_count += 1
+
+        return cue_count
 
     def _get_or_create_artist(self, rb6_db, artist_name: str) -> str | None:
         """Lookup or create an artist in the local DB.
