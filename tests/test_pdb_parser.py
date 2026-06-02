@@ -171,3 +171,155 @@ def test_no_forbidden_imports():
     assert "import construct" not in src, "construct darf nicht importiert werden"
     assert "import pyrekordbox" not in src, "pyrekordbox darf nicht importiert werden"
     assert "import sqlcipher3" not in src, "sqlcipher3 darf nicht importiert werden"
+
+
+# ---------------------------------------------------------------------------
+# Gruppe C — Phase-2 Tests: TrackRow.analyze_path (Wave 1, Plan 02-01)
+# ---------------------------------------------------------------------------
+
+
+def test_trackrow_has_analyze_path_field():
+    """TrackRow hat analyze_path-Attribut; kein AttributeError beim Zugriff."""
+    track = TrackRow(
+        track_id=1,
+        title="Test Track",
+        artist_name="Artist",
+        album_name="",
+        bpm=128.0,
+        key=None,
+        duration_secs=240,
+        rating=0,
+    )
+    # Attribut muss existieren — kein AttributeError
+    assert hasattr(track, "analyze_path"), "TrackRow muss analyze_path-Attribut haben"
+    assert track.analyze_path is None, "Default-Wert muss None sein"
+
+
+def test_analyze_path_none_when_missing():
+    """TrackRow mit analyze_path=None bleibt valide — kein AttributeError."""
+    track = TrackRow(
+        track_id=2,
+        title="Another Track",
+        artist_name="DJ",
+        album_name="",
+        bpm=140.0,
+        key=None,
+        duration_secs=300,
+        rating=3,
+        analyze_path=None,
+    )
+    assert track.analyze_path is None
+
+
+def _build_synthetic_pdb_with_track(
+    title: str = "TestTrack",
+    file_path: str = "/Contents/test.mp3",
+    analyze_path: str = "/PIONEER/USBANLZ/ab/cd1234ef.DAT",
+) -> bytes:
+    """Baut ein minimales synthetisches export.pdb mit einem Track-Eintrag.
+
+    Track-Zeile Aufbau (pdb_parser.py, parse_track_row):
+      - 8-Byte-Praefix (rbase = rs + 8)
+      - +0x38: tempo (u32) = 12800 (= 128.00 BPM)
+      - +0x40: album_id (u32) = 0
+      - +0x44: artist_id (u32) = 0
+      - +0x48: track_id (u32) = 1
+      - +0x54: duration (u16) = 240
+      - +0x59: rating (u8) = 0
+      - +0x5E: 21 x u16 string offsets (relativ zu rbase)
+      - Strings: title @ str_offs[17], file_path @ str_offs[20],
+                 analyze_path @ str_offs[14]
+    """
+    PAGE_SIZE_LOCAL = 4096
+    HEADER_END_LOCAL = 32
+    TABLE_START_OFF_LOCAL = 0x1C
+
+    def short_ascii(s: str) -> bytes:
+        """Encode string as DeviceSQL short ASCII."""
+        encoded = s.encode("ascii") + b"\x00"
+        raw_len = len(encoded)
+        flag = (raw_len << 1) | 0x01
+        return bytes([flag]) + encoded
+
+    title_bytes = short_ascii(title)
+    fp_bytes = short_ascii(file_path)
+    ap_bytes = short_ascii(analyze_path)
+
+    # Track-Zeile: 8-Byte-Praefix + feste Felder + 21 String-Offsets + Strings
+    # Feste Felder belegen: maximal bis 0x5E + 21*2 = 0x5E + 42 = 136 Bytes ab rbase
+    FIXED_SIZE = 0x5E + 21 * 2  # 136 Bytes ab rbase
+
+    # String-Daten haengen ab FIXED_SIZE an (relativ zu rbase)
+    str_data_start = FIXED_SIZE
+
+    off_title = str_data_start
+    off_fp = off_title + len(title_bytes)
+    off_ap = off_fp + len(fp_bytes)
+
+    offsets = [0] * 21
+    offsets[17] = off_title
+    offsets[20] = off_fp
+    offsets[14] = off_ap
+
+    fixed = bytearray(FIXED_SIZE)
+    struct.pack_into("<I", fixed, 0x38, 12800)   # tempo = 12800 (= 128.00 BPM)
+    struct.pack_into("<I", fixed, 0x48, 1)        # track_id = 1
+    struct.pack_into("<H", fixed, 0x54, 240)      # duration = 240
+    struct.pack_into("<21H", fixed, 0x5E, *offsets)
+
+    prefix = b"\x00" * 8
+    track_row_bytes = prefix + bytes(fixed) + title_bytes + fp_bytes + ap_bytes
+
+    # Seite aufbauen (4096 Bytes)
+    # Zeile: rs = HEADER_END_LOCAL = 32
+    # Row-Offset-Gruppe am Ende: 1 Slot
+    group_bytes = struct.pack("<HHH",
+        0,      # raw_off = 0 (rs - HEADER_END = 0)
+        0x01,   # rpf: Bit 0 gesetzt = Slot 0 present
+        0x01,   # txf
+    )
+
+    page = bytearray(PAGE_SIZE_LOCAL)
+    struct.pack_into("<I", page, 4, 1)    # page_idx = 1
+    struct.pack_into("<I", page, 8, 0)    # type = TABLE_TRACKS = 0
+    struct.pack_into("<I", page, 12, 0)   # next_pg = 0
+    page[24] = 1   # num_row_offsets = 1
+    page[25] = 0
+    page[26] = 0
+    page[27] = 0   # page_flags: is_data = True (bit 6 unset)
+
+    row_start = HEADER_END_LOCAL
+    page[row_start: row_start + len(track_row_bytes)] = track_row_bytes
+    page[PAGE_SIZE_LOCAL - len(group_bytes): PAGE_SIZE_LOCAL] = group_bytes
+
+    # PDB-Datei-Header (erste Seite = Seite 0)
+    file_header = bytearray(PAGE_SIZE_LOCAL)
+    struct.pack_into("<I", file_header, 0, 0)        # _zero = 0
+    struct.pack_into("<I", file_header, 4, 4096)     # page_size = 4096
+    struct.pack_into("<I", file_header, 8, 1)        # num_tables = 1
+    # Table-Eintrag: (type=0, unk=0, first_page=1, last_page=1)
+    struct.pack_into("<IIII", file_header, TABLE_START_OFF_LOCAL, 0, 0, 1, 1)
+
+    return bytes(file_header) + bytes(page)
+
+
+def test_analyze_path_extracted(tmp_path):
+    """parse_export_pdb gibt TrackRow mit analyze_path zurueck wenn str_offs[14] gesetzt."""
+    pdb_file = tmp_path / "export.pdb"
+    pdb_data = _build_synthetic_pdb_with_track(
+        title="SynthTrack",
+        file_path="/Contents/synth.mp3",
+        analyze_path="/PIONEER/USBANLZ/ab/cd1234ef.DAT",
+    )
+    pdb_file.write_bytes(pdb_data)
+
+    _, tracks = parse_export_pdb(pdb_file)
+    assert len(tracks) == 1, f"Erwartet 1 Track, bekam {len(tracks)}"
+    track = next(iter(tracks.values()))
+    # analyze_path muss gesetzt sein und mit /PIONEER beginnen
+    assert track.analyze_path is not None, (
+        "analyze_path darf nicht None sein wenn str_offs[14] gesetzt ist"
+    )
+    assert track.analyze_path.startswith("/PIONEER"), (
+        f"analyze_path soll mit /PIONEER beginnen, war: {track.analyze_path!r}"
+    )
