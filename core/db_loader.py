@@ -139,6 +139,9 @@ class DbLoadWorker(QRunnable):
                 logger.info("Opening DeviceLibraryPlus: %s", db_path)
                 try:
                     db = Rekordbox6Database(path=str(db_path), unlock=False)
+                    # Probe query — constructor succeeds even on encrypted DB;
+                    # the error only surfaces on first actual read.
+                    list(db.get_playlist())[:1]
                     logger.info("DeviceLibraryPlus (Rekordbox6Database) opened successfully")
                     self.signals.finished.emit(db)
                 except Exception as e:  # noqa: BLE001
