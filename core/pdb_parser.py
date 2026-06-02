@@ -506,6 +506,7 @@ def parse_export_pdb(path: Path) -> tuple[list[PlaylistRow], dict[int, TrackRow]
             key=None,  # Keys-Tabelle optional — TODO
             duration_secs=raw_track["duration"],
             rating=raw_track["rating"],
+            file_path=raw_track.get("file_path", ""),  # relative USB path — used for import path construction (D-11)
             analyze_path=raw_track.get("analyze_path"),  # str_offs[14] — cue point resolution (D-08, D-09)
         )
 

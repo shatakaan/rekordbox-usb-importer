@@ -43,6 +43,7 @@ class TrackRow:
     key: str | None
     duration_secs: int | None
     rating: int | None
+    file_path: str = ""  # Relative path on USB (e.g. "/Contents/Artist/track.mp3") — used to build absolute import path (D-11)
     analyze_path: str | None = None  # ANLZ file path from PDB str_offs[14] — enables cue point resolution (D-08, D-09)
 
     # ------------------------------------------------------------------
