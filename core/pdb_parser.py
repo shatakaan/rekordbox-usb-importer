@@ -264,7 +264,12 @@ def parse_playlist_entry_row(page_data: bytes, rs: int) -> dict:
     Returns:
         dict mit entry_index, track_id, playlist_id.
     """
-    entry_index, track_id, playlist_id = struct.unpack_from("<III", page_data, rs)
+    # Field order confirmed via live USB analysis:
+    # (entry_index, playlist_id, track_id) — NOT (entry_index, track_id, playlist_id).
+    # The Kaitai KSY schema lists track_id before playlist_id, but live binary
+    # analysis of this USB shows field 2 is always 1 (the only PlaylistTree node)
+    # when parsed as playlist_id, and field 3 maps to real track IDs 2-17.
+    entry_index, playlist_id, track_id = struct.unpack_from("<III", page_data, rs)
     return {
         "entry_index": entry_index,
         "track_id":    track_id,
@@ -472,6 +477,9 @@ def parse_export_pdb(path: Path) -> tuple[list[PlaylistRow], dict[int, TrackRow]
         for page_data, rs in iter_table_rows(data, TABLE_PLAYLIST_ENTRIES):
             try:
                 e = parse_playlist_entry_row(page_data, rs)
+                # Filter stale/sentinel entries (playlist_id=0 or track_id=0 are invalid)
+                if e["playlist_id"] == 0 or e["track_id"] == 0:
+                    continue
                 # Pitfall 10: playlist_id ohne Knoten in playlist_nodes -> graceful ignorieren
                 entries_by_playlist[e["playlist_id"]].append(
                     (e["entry_index"], e["track_id"])
