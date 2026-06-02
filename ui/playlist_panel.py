@@ -21,6 +21,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QLabel,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -46,8 +47,13 @@ class PlaylistPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        header_label = QLabel("PLAYLISTS")
+        header_label.setObjectName("sectionHeader")
+        header_label.setContentsMargins(12, 8, 12, 4)
+        layout.addWidget(header_label)
+
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabel("Playlists")
+        self.tree.setHeaderHidden(True)
         self.tree.setSelectionMode(
             QAbstractItemView.SelectionMode.SingleSelection
         )

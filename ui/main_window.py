@@ -25,6 +25,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -106,26 +107,31 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root_layout = QVBoxLayout(central)
-        root_layout.setContentsMargins(8, 8, 8, 8)
-        root_layout.setSpacing(4)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
 
-        # --- Toolbar row (44px fixed height) ---
-        toolbar_row = QHBoxLayout()
-        toolbar_row.setContentsMargins(0, 0, 0, 0)
-        toolbar_row.setSpacing(8)
+        # --- Toolbar (styled QFrame, edge-to-edge) ---
+        toolbar = QFrame()
+        toolbar.setObjectName("toolbar")
+        toolbar.setFixedHeight(52)
+        toolbar_row = QHBoxLayout(toolbar)
+        toolbar_row.setContentsMargins(12, 0, 12, 0)
+        toolbar_row.setSpacing(10)
 
-        usb_label = QLabel("USB Source:")
+        usb_label = QLabel("USB SOURCE")
+        usb_label.setObjectName("sectionHeader")
         toolbar_row.addWidget(usb_label)
 
         self.usb_combo = QComboBox()
-        self.usb_combo.setMinimumWidth(200)
+        self.usb_combo.setMinimumWidth(220)
         toolbar_row.addWidget(self.usb_combo)
 
-        toolbar_row.addStretch()  # push Import button to the right
+        toolbar_row.addStretch()
 
         self.import_btn = QPushButton("Import Selected")
+        self.import_btn.setObjectName("primaryBtn")
         self.import_btn.setEnabled(False)
-        self.import_btn.setFixedHeight(32)
+        self.import_btn.setFixedHeight(34)
         self.import_btn.setToolTip(
             "Import is not active in this version. "
             "Select playlists to prepare for import."
@@ -135,7 +141,7 @@ class MainWindow(QMainWindow):
         )
         toolbar_row.addWidget(self.import_btn)
 
-        root_layout.addLayout(toolbar_row)
+        root_layout.addWidget(toolbar)
 
         # --- Main splitter (Horizontal) ---
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -150,7 +156,7 @@ class MainWindow(QMainWindow):
         # --- Log panel ---
         self.log_panel = LogPanel()
         self.log_panel.setMinimumHeight(80)
-        self.log_panel.setMaximumHeight(240)
+        self.log_panel.setMaximumHeight(220)
         root_layout.addWidget(self.log_panel, stretch=0)
 
         # --- Wire playlist selection → track population ---

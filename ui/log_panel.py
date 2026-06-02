@@ -16,9 +16,8 @@ relay mechanism before calling appendPlainText() from a background thread.
 
 import logging
 
-from PySide6.QtCore import Qt
 from PySide6.QtGui import QFontDatabase
-from PySide6.QtWidgets import QLabel, QPlainTextEdit, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QLabel, QPlainTextEdit, QVBoxLayout
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +56,7 @@ class QLogHandler(logging.Handler):
             self.handleError(record)
 
 
-class LogPanel(QWidget):
+class LogPanel(QFrame):
     """Bottom log panel — QPlainTextEdit wired to the root Python logger.
 
     Displays in-app status messages with [HH:MM:SS] timestamps in a
@@ -67,19 +66,21 @@ class LogPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("logFrame")
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+        layout.setContentsMargins(12, 6, 12, 8)
+        layout.setSpacing(4)
 
-        label = QLabel("Log")
+        label = QLabel("ACTIVITY LOG")
+        label.setObjectName("sectionHeader")
         layout.addWidget(label)
 
         self._text = QPlainTextEdit()
+        self._text.setObjectName("logText")
         self._text.setReadOnly(True)
         self._text.setMaximumBlockCount(500)
-        self._text.setMaximumHeight(160)
-        # System monospace font per UI-SPEC Typography section
         mono_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        mono_font.setPointSize(11)
         self._text.setFont(mono_font)
         self._text.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         layout.addWidget(self._text)

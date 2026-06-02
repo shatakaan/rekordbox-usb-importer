@@ -14,12 +14,14 @@ import sys
 from PySide6.QtWidgets import QApplication
 
 from ui.main_window import MainWindow
+from ui.theme import apply_theme
 
 
 def main() -> None:
     """Start the Playlist Converter application."""
     logging.basicConfig(level=logging.DEBUG)
     app = QApplication(sys.argv)
+    apply_theme(app)
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

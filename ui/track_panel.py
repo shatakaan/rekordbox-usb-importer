@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 
 logger = logging.getLogger(__name__)
 
-COLUMNS = ["Title", "Artist", "Album", "BPM", "Key", "Duration", "Rating"]
+COLUMNS = ["TITLE", "ARTIST", "ALBUM", "BPM", "KEY", "DURATION", "RATING"]
 
 
 class TrackPanel(QWidget):
@@ -66,10 +66,10 @@ class TrackPanel(QWidget):
         self.table.setColumnWidth(1, 140)
         self.table.setColumnWidth(2, 120)
         # Set fixed widths for Fixed columns
-        self.table.setColumnWidth(3, 60)
-        self.table.setColumnWidth(4, 52)
-        self.table.setColumnWidth(5, 60)
-        self.table.setColumnWidth(6, 64)
+        self.table.setColumnWidth(3, 64)
+        self.table.setColumnWidth(4, 56)
+        self.table.setColumnWidth(5, 76)
+        self.table.setColumnWidth(6, 68)
 
         # Behaviour flags (UI-SPEC Right Panel)
         self.table.setEditTriggers(
