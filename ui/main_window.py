@@ -22,7 +22,7 @@ and format_detector.detect_usb_format — paths are resolved before use.
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -36,13 +36,43 @@ from PySide6.QtWidgets import (
 )
 
 from core.db_loader import PdbDatabase, open_usb_db_async
+from core.duplicate_detector import check_duplicate
 from core.format_detector import USB_04_ERROR_MESSAGE, UsbFormat
+from core.import_controller import ImportController, ImportPlan, ImportResult, TrackImportStatus
 from core.usb_scanner import USBScanner
 from ui.log_panel import LogPanel
 from ui.playlist_panel import PlaylistPanel
 from ui.track_panel import TrackPanel
 
 logger = logging.getLogger(__name__)
+
+
+class _ImportSignals(QObject):
+    """Qt signals for cross-thread communication from the import worker."""
+    progress = Signal(str)
+    finished = Signal(object)
+    error = Signal(str)
+
+
+class _ImportWorker(QRunnable):
+    """Background QRunnable that executes the full import pipeline.
+
+    All UI updates must go via signals — never touch widgets from run().
+    """
+
+    def __init__(self, controller: ImportController, plan: ImportPlan) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self.signals = _ImportSignals()
+        self._controller = controller
+        self._plan = plan
+
+    def run(self) -> None:
+        try:
+            result = self._controller.run_import_plan(self._plan)
+            self.signals.finished.emit(result)
+        except Exception as exc:  # noqa: BLE001
+            self.signals.error.emit(str(exc))
 
 _MAX_PLAYLIST_DEPTH = 50  # T-06-02: DoS guard — Rekordbox never exceeds ~10 levels
 
@@ -94,6 +124,14 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Playlist Converter")
         self.setMinimumSize(960, 640)
         self.resize(960, 640)
+
+        # Import pipeline state
+        self._pdb_db = None          # USB PDB database (read)
+        self._usb_mount: Path | None = None
+        self._rb6_db = None          # local Rekordbox6Database (write)
+        self._import_plan: ImportPlan | None = None
+        self._import_controller: ImportController | None = None
+        self._import_tracks: dict = {}  # track_id -> TrackRow
 
         self._build_ui()
         self._setup_usb_watcher()
@@ -161,6 +199,12 @@ class MainWindow(QMainWindow):
 
         # --- Wire playlist selection → track population ---
         self.playlist_panel.playlist_selected.connect(self.track_panel.populate)
+
+        # --- Wire import button ---
+        self.import_btn.clicked.connect(self._on_import_clicked)
+
+        # --- Enable import button when any playlist is checked ---
+        self.playlist_panel.tree.itemChanged.connect(self._on_playlist_check_changed)
 
         # --- Initial tree state before any USB scan ---
         self.playlist_panel.set_empty_state("Connect a Rekordbox USB stick")
@@ -277,6 +321,11 @@ class MainWindow(QMainWindow):
         """
         try:
             if isinstance(db, PdbDatabase):
+                # Store USB database + mount for import pipeline
+                self._pdb_db = db
+                data = self.usb_combo.currentData()
+                if data:
+                    self._usb_mount = data[0]
                 # PDB path (export.pdb via pdb_parser)
                 root_playlists = db.playlists
                 track_count = sum(
@@ -319,6 +368,159 @@ class MainWindow(QMainWindow):
         """
         logger.error("DB open failed: %s", msg)
         self.playlist_panel.set_empty_state("Error loading DB — see log")
+
+    # ------------------------------------------------------------------
+    # Import pipeline handlers (D-01..D-04, SAFE-01..04)
+    # ------------------------------------------------------------------
+
+    def _on_playlist_check_changed(self, _item) -> None:
+        """Enable Import button when at least one playlist checkbox is checked."""
+        has_checked = self._any_playlist_checked(self.playlist_panel.tree.invisibleRootItem())
+        self.import_btn.setEnabled(has_checked)
+
+    def _any_playlist_checked(self, parent_item) -> bool:
+        """Recursively check if any tree item has a checked state."""
+        for i in range(parent_item.childCount()):
+            child = parent_item.child(i)
+            if child.checkState(0) != Qt.CheckState.Unchecked:
+                return True
+            if self._any_playlist_checked(child):
+                return True
+        return False
+
+    def _on_import_clicked(self) -> None:
+        """Handle Import button click — preflight, build plan, show summary."""
+        if self._pdb_db is None or self._usb_mount is None:
+            logger.error("No USB database loaded — cannot import")
+            return
+
+        selected_playlists = self._get_checked_playlists(
+            self.playlist_panel.tree.invisibleRootItem()
+        )
+        if not selected_playlists:
+            logger.warning("No playlists selected")
+            return
+
+        # Open local Rekordbox6Database
+        try:
+            from pyrekordbox import Rekordbox6Database
+            self._rb6_db = Rekordbox6Database()
+        except Exception:
+            logger.exception("Failed to open local Rekordbox database")
+            return
+
+        # Preflight: block if Rekordbox is running, USB not mounted
+        self._import_controller = ImportController(self._rb6_db, self._usb_mount)
+        preflight = self._import_controller.run_preflight()
+        if not preflight.ok:
+            logger.error("Import blocked: %s", preflight.message)
+            return
+
+        # Build import plan — check each track against local DB for duplicates
+        plan = ImportPlan(mount=self._usb_mount, selected_playlists=selected_playlists)
+        self._import_tracks = {}
+        mount_resolved = str(self._usb_mount.resolve())
+
+        for playlist_row in selected_playlists:
+            for song in (playlist_row.songs or []):
+                track = song.content
+                if track.track_id in plan.track_statuses:
+                    continue
+                rel_path = track.file_path.lstrip("/")
+                abs_path = (self._usb_mount / rel_path).resolve()
+                if not str(abs_path).startswith(mount_resolved):
+                    logger.warning("Skipping track with unsafe path: %s", track.file_path)
+                    plan.track_statuses[track.track_id] = TrackImportStatus.SKIP
+                else:
+                    existing = check_duplicate(
+                        self._rb6_db, abs_path,
+                        track.title or "", track.artist_name or "",
+                        track.duration_secs or 0,
+                    )
+                    status = TrackImportStatus.DUPLICATE if existing else TrackImportStatus.NEW
+                    plan.track_statuses[track.track_id] = status
+                self._import_tracks[track.track_id] = track
+
+        self._import_plan = plan
+
+        # Preview backup path (SAFE-03 / D-14)
+        from datetime import datetime
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_preview = str(self._rb6_db._db_dir / f"master.db.backup.{ts}")
+        logger.info("Backup will be created at: %s", backup_preview)
+
+        # Switch TrackPanel to summary mode (D-01, D-03)
+        self.track_panel.populate_import_summary(
+            plan, self._import_tracks, backup_path_str=backup_preview
+        )
+        self.track_panel.back_clicked.connect(self._on_import_back)
+        self.track_panel.confirm_clicked.connect(self._on_confirm_import)
+        self.import_btn.setEnabled(False)
+
+    def _on_import_back(self) -> None:
+        """Handle Back button — return to browse view."""
+        self.track_panel.restore_browse_mode()
+        try:
+            self.track_panel.back_clicked.disconnect(self._on_import_back)
+            self.track_panel.confirm_clicked.disconnect(self._on_confirm_import)
+        except RuntimeError:
+            pass
+        self.import_btn.setEnabled(True)
+
+    def _on_confirm_import(self) -> None:
+        """Handle Confirm Import — update force_import_ids and start worker."""
+        if self._import_plan is None or self._import_controller is None:
+            return
+
+        # Read user's per-track selections (DUPLICATE override via checked state)
+        selections = self.track_panel.get_import_selections()
+        self._import_plan.force_import_ids = {
+            tid
+            for tid, will in selections.items()
+            if will and self._import_plan.track_statuses.get(tid) == TrackImportStatus.DUPLICATE
+        }
+
+        worker = _ImportWorker(self._import_controller, self._import_plan)
+        worker.signals.progress.connect(lambda msg: logger.info("%s", msg))
+        worker.signals.finished.connect(self._on_import_finished)
+        worker.signals.error.connect(lambda err: logger.error("Import error: %s", err))
+
+        # Disable buttons while import runs (T-02-05-03)
+        self.import_btn.setEnabled(False)
+        self.track_panel._confirm_btn.setEnabled(False)
+        self.track_panel._back_btn.setEnabled(False)
+
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_import_finished(self, result: ImportResult) -> None:
+        """Handle import completion — log summary and restore UI."""
+        logger.info(
+            "Import complete — %d imported, %d skipped, %d failed. Backup: %s",
+            result.imported_count,
+            result.skipped_count,
+            result.failed_count,
+            result.backup_path,
+        )
+        self.track_panel.restore_browse_mode()
+        try:
+            self.track_panel.back_clicked.disconnect(self._on_import_back)
+            self.track_panel.confirm_clicked.disconnect(self._on_confirm_import)
+        except RuntimeError:
+            pass
+        self.import_btn.setEnabled(True)
+
+    def _get_checked_playlists(self, parent_item) -> list:
+        """Return all non-folder PlaylistRow objects whose checkbox is checked."""
+        result = []
+        for i in range(parent_item.childCount()):
+            item = parent_item.child(i)
+            playlist = item.data(0, Qt.ItemDataRole.UserRole)
+            if playlist is not None:
+                is_folder = getattr(playlist, "Attribute", 0) == 1
+                if not is_folder and item.checkState(0) == Qt.CheckState.Checked:
+                    result.append(playlist)
+            result.extend(self._get_checked_playlists(item))
+        return result
 
     def _show_error(self, message: str) -> None:
         """Log an error to both the Python logger and the log panel widget.

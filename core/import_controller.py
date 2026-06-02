@@ -348,6 +348,79 @@ class ImportController:
 
         return cue_count
 
+    def run_import_plan(self, plan: ImportPlan, _tracks_by_id: dict | None = None) -> ImportResult:
+        """Import all playlists in plan, creating one DB playlist per source playlist.
+
+        Handles backup, multi-playlist write, cue import, and rollback on error.
+        Tracks with status DUPLICATE are skipped unless their id is in plan.force_import_ids.
+
+        Args:
+            plan: ImportPlan produced by build_import_plan / caller.
+            tracks_by_id: dict[int, TrackRow] mapping track_id to TrackRow.
+
+        Returns:
+            ImportResult with counts and backup_path.
+        """
+        master_db_path = self.db._db_dir / "master.db"
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = self.db._db_dir / f"master.db.backup.{ts}"
+        shutil.copy2(master_db_path, backup_path)
+        logger.info("Backup created: %s", backup_path)
+
+        result = ImportResult(backup_path=backup_path)
+
+        try:
+            for playlist_row in plan.selected_playlists:
+                db_playlist = self.db.create_playlist(playlist_row.name)
+                logger.info("Writing playlist: %s", playlist_row.name)
+
+                for song in (playlist_row.songs or []):
+                    track = song.content
+                    status = plan.track_statuses.get(track.track_id, TrackImportStatus.NEW)
+
+                    if status == TrackImportStatus.SKIP:
+                        result.skipped_count += 1
+                        continue
+                    if status == TrackImportStatus.DUPLICATE and track.track_id not in plan.force_import_ids:
+                        result.skipped_count += 1
+                        continue
+
+                    rel_path = track.file_path.lstrip("/")
+                    abs_path = (self.mount / rel_path).resolve()
+                    bpm_int = int(round(track.bpm * 100)) if track.bpm else 0
+
+                    try:
+                        content = self.db.add_content(
+                            path=abs_path,
+                            Title=track.title or "",
+                            BPM=bpm_int,
+                            Length=track.duration_secs or 0,
+                            Rating=track.rating or 0,
+                            FileNameS=abs_path.stem[:255],
+                        )
+                        self.db.add_to_playlist(db_playlist, content)
+                        cue_count = self._import_cues(self.db, content, track, self.mount)
+                        logger.info("Track '%s': %d cues imported", track.title, cue_count)
+                        result.imported_count += 1
+                    except Exception:
+                        logger.exception("Failed to import track '%s'", track.title)
+                        result.failed_count += 1
+
+            self.db.commit()
+            logger.info(
+                "Import complete — %d imported, %d skipped, %d failed. Backup: %s",
+                result.imported_count,
+                result.skipped_count,
+                result.failed_count,
+                backup_path,
+            )
+
+        except Exception:
+            self.db.rollback()
+            raise
+
+        return result
+
     def _get_or_create_artist(self, rb6_db, artist_name: str) -> str | None:
         """Lookup or create an artist in the local DB.
 
