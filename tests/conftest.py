@@ -82,6 +82,7 @@ def make_track_row():
             key=None,
             duration_secs=duration_secs,
             rating=rating,
+            file_path=file_path,
             analyze_path=analyze_path,
         )
 
