@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.db_loader import open_usb_db_async
+from core.db_loader import PdbDatabase, open_usb_db_async
 from core.format_detector import USB_04_ERROR_MESSAGE, UsbFormat
 from core.usb_scanner import USBScanner
 from ui.log_panel import LogPanel
@@ -42,6 +42,39 @@ from ui.playlist_panel import PlaylistPanel
 from ui.track_panel import TrackPanel
 
 logger = logging.getLogger(__name__)
+
+_MAX_PLAYLIST_DEPTH = 50  # T-06-02: DoS guard — Rekordbox never exceeds ~10 levels
+
+
+def _iter_all_playlists(playlists: list, _depth: int = 0) -> list:
+    """Return a flat list of all playlists (including nested children).
+
+    Used for track-count calculation in _on_db_loaded.
+
+    Security (T-06-02): Recursion depth is limited to _MAX_PLAYLIST_DEPTH.
+    Rekordbox USB exports never exceed 5–10 nesting levels in practice; the
+    limit guards against corrupt / crafted PDB files with circular references.
+
+    Args:
+        playlists: list of PlaylistRow (or duck-typing-compatible) objects.
+        _depth: internal recursion counter; do not pass from call sites.
+
+    Returns:
+        Flat list containing every playlist node reachable from `playlists`.
+    """
+    if _depth > _MAX_PLAYLIST_DEPTH:
+        logger.warning(
+            "_iter_all_playlists: max depth %d reached — truncating recursion",
+            _MAX_PLAYLIST_DEPTH,
+        )
+        return []
+    result = []
+    for p in playlists:
+        result.append(p)
+        children = getattr(p, "Children", None) or getattr(p, "children", None) or []
+        if children:
+            result.extend(_iter_all_playlists(children, _depth + 1))
+    return result
 
 
 class MainWindow(QMainWindow):
@@ -152,24 +185,16 @@ class MainWindow(QMainWindow):
         self.usb_combo.blockSignals(True)
         self.usb_combo.clear()
 
+        # Both DEVICE_LIBRARY_PLUS and REKORDBOX_PDB are now fully supported.
+        # (REKORDBOX_PDB is handled via pdb_parser since Plan 01-06.)
         supported_usbs = [
-            (m, f) for m, f in usbs if f == UsbFormat.DEVICE_LIBRARY_PLUS
+            (m, f)
+            for m, f in usbs
+            if f in (UsbFormat.DEVICE_LIBRARY_PLUS, UsbFormat.REKORDBOX_PDB)
         ]
-        pdb_usbs = [
-            (m, f) for m, f in usbs if f == UsbFormat.REKORDBOX_PDB
-        ]
-
-        # Log PDB USBs present alongside supported USBs (informational)
-        for mount, _ in pdb_usbs:
-            logger.warning(
-                "USB at %s uses export.pdb format — not yet fully supported. "
-                "Re-export from Rekordbox 6 or 7 with Device Library Plus enabled.",
-                mount,
-            )
 
         if not usbs:
             # No Rekordbox USB detected at all
-            placeholder = self.usb_combo.model().item(0) if False else None
             self.usb_combo.addItem("No Rekordbox USB found")
             # Make non-selectable
             model = self.usb_combo.model()
@@ -178,7 +203,7 @@ class MainWindow(QMainWindow):
             logger.info("No Rekordbox USB found")
 
         elif not supported_usbs:
-            # Only PDB USB(es) — unsupported format
+            # USBs present but none in a supported format
             self.usb_combo.addItem("No supported USB found (see log)")
             model = self.usb_combo.model()
             model.item(0).setEnabled(False)
@@ -240,45 +265,45 @@ class MainWindow(QMainWindow):
         """Handle successful DB open from the background worker.
 
         Args:
-            db: Rekordbox6Database instance (or future DeviceLibraryPlus) opened
-                by DbLoadWorker. Called on the main thread via Qt signal.
+            db: Either PdbDatabase (from pdb_parser, REKORDBOX_PDB format) or
+                Rekordbox6Database (from pyrekordbox, DEVICE_LIBRARY_PLUS format).
+                Called on the main thread via Qt signal.
         """
         try:
-            all_playlists = list(db.get_playlist())
+            if isinstance(db, PdbDatabase):
+                # PDB path (export.pdb via pdb_parser)
+                root_playlists = db.playlists
+                track_count = sum(
+                    len(p.Songs) for p in _iter_all_playlists(root_playlists)
+                )
+                logger.info(
+                    "Loaded %d playlists, %d tracks (PDB)",
+                    len(root_playlists), track_count,
+                )
+                self.playlist_panel.populate(root_playlists)
+            else:
+                # pyrekordbox ORM path (Rekordbox6Database — local master.db or
+                # DEVICE_LIBRARY_PLUS exportLibrary.db)
+                all_playlists = list(db.get_playlist())
+                track_count = 0
+                for p in all_playlists:
+                    try:
+                        songs = getattr(p, "Songs", None) or []
+                        track_count += len(songs)
+                    except Exception:  # noqa: BLE001
+                        pass
+                logger.info(
+                    "Loaded %d playlists, %d tracks (ORM)",
+                    len(all_playlists), track_count,
+                )
+                roots = [
+                    p for p in all_playlists
+                    if getattr(p, "ParentID", None) in (None, 0)
+                ]
+                self.playlist_panel.populate(roots)
         except Exception:  # noqa: BLE001
-            logger.exception("Failed to list playlists from DB")
+            logger.exception("Failed to process loaded DB")
             self.playlist_panel.set_empty_state("Error loading playlists — see log")
-            return
-
-        # Count tracks across all playlists (best-effort — attribute name may vary)
-        track_count = 0
-        for p in all_playlists:
-            try:
-                songs = getattr(p, "Songs", None) or []
-                track_count += len(songs)
-            except Exception:  # noqa: BLE001
-                pass
-
-        logger.info(
-            "Loaded %d playlists, %d tracks", len(all_playlists), track_count
-        )
-
-        # Build root-level playlist list (ParentID None or 0)
-        # SPIKE NOTE: if AttributeError on ParentID, fall back to flat list.
-        # Record actual attribute name in SUMMARY for Phase 2 schema fix.
-        try:
-            roots = [
-                p for p in all_playlists
-                if getattr(p, "ParentID", None) in (None, 0)
-            ]
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "ParentID attribute not found on DjmdPlaylist — "
-                "falling back to flat list. Note actual attribute name for Phase 2."
-            )
-            roots = all_playlists
-
-        self.playlist_panel.populate(roots)
 
     def _on_db_error(self, msg: str) -> None:
         """Handle DB open failure from the background worker.
