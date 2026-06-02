@@ -210,19 +210,22 @@ def parse_track_row(page_data: bytes, rs: int) -> dict:
     rating   = page_data[rbase + 0x59]
 
     # String-Offsets: 21 × u16 ab rbase+0x5E (Pitfall 6: relativ zu rbase)
+    # Bounds: str_offs has indices 0..20; 0 means "not set" -> decode_devicesql_string returns ""
     str_offs = list(struct.unpack_from("<21H", page_data, rbase + 0x5E))
-    title, _    = decode_devicesql_string(page_data, rbase + str_offs[17])
-    filepath, _ = decode_devicesql_string(page_data, rbase + str_offs[20])
+    title, _        = decode_devicesql_string(page_data, rbase + str_offs[17])
+    filepath, _     = decode_devicesql_string(page_data, rbase + str_offs[20])
+    analyze_raw, _  = decode_devicesql_string(page_data, rbase + str_offs[14])  # T-02-01-01: str_offs[14]
 
     return {
-        "id":        track_id,
-        "title":     title,
-        "artist_id": artist_id,
-        "album_id":  album_id,
-        "bpm":       tempo / 100.0,
-        "duration":  duration,
-        "rating":    rating,
-        "file_path": filepath,
+        "id":           track_id,
+        "title":        title,
+        "artist_id":    artist_id,
+        "album_id":     album_id,
+        "bpm":          tempo / 100.0,
+        "duration":     duration,
+        "rating":       rating,
+        "file_path":    filepath,
+        "analyze_path": analyze_raw or None,  # empty string -> None (T-02-01-01)
     }
 
 
@@ -503,6 +506,7 @@ def parse_export_pdb(path: Path) -> tuple[list[PlaylistRow], dict[int, TrackRow]
             key=None,  # Keys-Tabelle optional — TODO
             duration_secs=raw_track["duration"],
             rating=raw_track["rating"],
+            analyze_path=raw_track.get("analyze_path"),  # str_offs[14] — cue point resolution (D-08, D-09)
         )
 
     # --- 6. PlaylistRow-Objekte bauen ---
