@@ -22,7 +22,7 @@ and format_detector.detect_usb_format — paths are resolved before use.
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal
+from PySide6.QtCore import QObject, QRunnable, QSettings, QThreadPool, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -45,6 +45,64 @@ from ui.playlist_panel import PlaylistPanel
 from ui.track_panel import TrackPanel
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# QSettings helpers (D-03, UX-04)
+# ---------------------------------------------------------------------------
+
+def _settings() -> QSettings:
+    """Return a QSettings instance backed by the macOS NativeFormat plist.
+
+    Maps to: ~/Library/Preferences/com.com-inevents-mainz.PlaylistConverter.plist
+    (Qt prepends the org name — cosmetic quirk, data is correct.)
+    """
+    return QSettings(
+        QSettings.Format.NativeFormat,
+        QSettings.Scope.UserScope,
+        "com.inevents-mainz",
+        "PlaylistConverter",
+    )
+
+
+def save_session(
+    usb_mount,
+    selected_ids,
+    settings: QSettings | None = None,
+) -> None:
+    """Persist last USB mount path and selected playlist IDs to QSettings.
+
+    Args:
+        usb_mount: Path or str of the USB mount point, or None.
+        selected_ids: Iterable of int playlist IDs to persist.
+        settings: Optional QSettings instance for dependency injection (tests).
+                  Uses _settings() when None.
+    """
+    s = settings if settings is not None else _settings()
+    if usb_mount is not None:
+        s.setValue("usb/last_mount", str(usb_mount))
+    s.setValue("usb/selected_playlist_ids", sorted(int(x) for x in selected_ids))
+    s.sync()
+
+
+def load_session(
+    settings: QSettings | None = None,
+) -> tuple:
+    """Read persisted USB mount and playlist IDs from QSettings.
+
+    Args:
+        settings: Optional QSettings instance for dependency injection (tests).
+                  Uses _settings() when None.
+
+    Returns:
+        Tuple of (mount_str: str | None, ids: set[int]).
+        mount_str is None when no prior save exists.
+    """
+    s = settings if settings is not None else _settings()
+    mount_str = s.value("usb/last_mount", None)
+    raw_ids = s.value("usb/selected_playlist_ids", [], type=list)
+    ids = {int(x) for x in raw_ids if x is not None}
+    return (mount_str, ids)
 
 
 class _ImportSignals(QObject):
@@ -133,8 +191,13 @@ class MainWindow(QMainWindow):
         self._import_controller: ImportController | None = None
         self._import_tracks: dict = {}  # track_id -> TrackRow
 
+        # Session state (UX-04, D-03)
+        self._last_usb_name: str = ""
+        self._restored_playlist_ids: set = set()
+
         self._build_ui()
         self._setup_usb_watcher()
+        self._restore_session()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -246,7 +309,12 @@ class MainWindow(QMainWindow):
             # Make non-selectable
             model = self.usb_combo.model()
             model.item(0).setEnabled(False)
-            self.playlist_panel.set_empty_state("Connect a Rekordbox USB stick")
+            if self._last_usb_name:
+                self.playlist_panel.set_empty_state(
+                    f"'{self._last_usb_name}' was last used — connect it to continue"
+                )
+            else:
+                self.playlist_panel.set_empty_state("Connect a Rekordbox USB stick")
             logger.info("No Rekordbox USB found")
 
         elif not supported_usbs:
@@ -265,6 +333,9 @@ class MainWindow(QMainWindow):
             label = f"{mount.name} (auto-selected)"
             self.usb_combo.addItem(label, userData=(mount, fmt))
             logger.info("USB detected: %s", mount)
+            # Session restore: log when last USB matches by name (D-03)
+            if self._last_usb_name and supported_usbs[0][0].name == self._last_usb_name:
+                logger.info("Session restored: auto-selecting %s", mount.name)
             # Auto-load the single USB
             self._load_usb(mount, fmt)
 
@@ -293,6 +364,9 @@ class MainWindow(QMainWindow):
         if data is None:
             return
         mount, fmt = data
+        self._usb_mount = mount
+        # Persist last-selected USB even if user never clicks Import (D-03)
+        self._save_session()
         self._load_usb(mount, fmt)
 
     def _load_usb(self, mount: Path, usb_format: UsbFormat) -> None:
@@ -333,6 +407,7 @@ class MainWindow(QMainWindow):
                     len(root_playlists), track_count,
                 )
                 self.playlist_panel.populate(root_playlists)
+                self._apply_restored_checkboxes()
             else:
                 # pyrekordbox ORM path (Rekordbox6Database — local master.db or
                 # DEVICE_LIBRARY_PLUS exportLibrary.db)
@@ -353,6 +428,7 @@ class MainWindow(QMainWindow):
                     if getattr(p, "ParentID", None) in (None, 0)
                 ]
                 self.playlist_panel.populate(roots)
+                self._apply_restored_checkboxes()
         except Exception:  # noqa: BLE001
             logger.exception("Failed to process loaded DB")
             self.playlist_panel.set_empty_state("Error loading playlists — see log")
@@ -397,6 +473,9 @@ class MainWindow(QMainWindow):
         if not selected_playlists:
             logger.warning("No playlists selected")
             return
+
+        # Save session before building plan (covers crash scenarios — D-03)
+        self._save_session()
 
         # Open local Rekordbox6Database
         try:
@@ -502,7 +581,7 @@ class MainWindow(QMainWindow):
         QThreadPool.globalInstance().start(worker)
 
     def _on_import_finished(self, result: ImportResult) -> None:
-        """Handle import completion — log summary and restore UI."""
+        """Handle import completion — show post-import summary panel (UX-03)."""
         logger.info(
             "Import complete — %d imported, %d skipped, %d failed. Backup: %s",
             result.imported_count,
@@ -510,11 +589,33 @@ class MainWindow(QMainWindow):
             result.failed_count,
             result.backup_path,
         )
-        self.track_panel.restore_browse_mode()
-        self._repopulate_selected_playlist()
+        # Persist successful import state (D-03)
+        self._save_session()
+
+        # Disconnect import-phase signal handlers
         try:
             self.track_panel.back_clicked.disconnect(self._on_import_back)
             self.track_panel.confirm_clicked.disconnect(self._on_confirm_import)
+        except RuntimeError:
+            pass
+
+        # Re-enable buttons before switching mode (populate_post_import_summary
+        # will disable Back and relabel Confirm -> Done)
+        self.track_panel._confirm_btn.setEnabled(True)
+        self.track_panel._back_btn.setEnabled(True)
+
+        # Show per-playlist result table (UX-03, D-01, D-02)
+        self.track_panel.populate_post_import_summary(result, self._import_plan)
+
+        # Wire Done button to summary-done handler
+        self.track_panel.confirm_clicked.connect(self._on_summary_done)
+
+    def _on_summary_done(self) -> None:
+        """Handle Done button in post-import mode — return to browse view."""
+        self.track_panel.restore_browse_mode()
+        self._repopulate_selected_playlist()
+        try:
+            self.track_panel.confirm_clicked.disconnect(self._on_summary_done)
         except RuntimeError:
             pass
         self.import_btn.setEnabled(True)
@@ -548,6 +649,64 @@ class MainWindow(QMainWindow):
             if state != Qt.CheckState.Unchecked:
                 result.extend(self._get_checked_playlists(item))
         return result
+
+    # ------------------------------------------------------------------
+    # Session persistence (UX-04, D-03)
+    # ------------------------------------------------------------------
+
+    def _save_session(self) -> None:
+        """Persist USB mount and checked playlist IDs to QSettings plist."""
+        checked_ids = self._get_checked_playlist_ids()
+        save_session(self._usb_mount, checked_ids)
+
+    def _restore_session(self) -> None:
+        """Read persisted USB mount and playlist IDs from QSettings plist."""
+        mount_str, ids = load_session()
+        self._last_usb_name = Path(mount_str).name if mount_str else ""
+        self._restored_playlist_ids = ids
+
+    def _get_checked_playlist_ids(self) -> set:
+        """Return IDs of all checked playlist tree items.
+
+        Returns:
+            set of int playlist IDs.
+        """
+        ids: set = set()
+        self._collect_checked_ids(self.playlist_panel.tree.invisibleRootItem(), ids)
+        return ids
+
+    def _collect_checked_ids(self, parent_item, ids: set) -> None:
+        """Recursively collect checked playlist IDs from the tree."""
+        for i in range(parent_item.childCount()):
+            item = parent_item.child(i)
+            playlist = item.data(0, Qt.ItemDataRole.UserRole)
+            if playlist is not None and item.checkState(0) == Qt.CheckState.Checked:
+                ids.add(int(playlist.id))
+            self._collect_checked_ids(item, ids)
+
+    def _apply_restored_checkboxes(self) -> None:
+        """Pre-check playlist tree items whose IDs match the restored session.
+
+        Called after playlist_panel.populate() in _on_db_loaded.
+        Clears _restored_playlist_ids after applying so a subsequent USB
+        swap does not re-apply stale IDs.
+        """
+        if not self._restored_playlist_ids:
+            return
+        self._check_matching_items(
+            self.playlist_panel.tree.invisibleRootItem(),
+            self._restored_playlist_ids,
+        )
+        self._restored_playlist_ids = set()
+
+    def _check_matching_items(self, parent_item, ids: set) -> None:
+        """Recursively set Checked state on items whose playlist.id is in ids."""
+        for i in range(parent_item.childCount()):
+            item = parent_item.child(i)
+            playlist = item.data(0, Qt.ItemDataRole.UserRole)
+            if playlist is not None and int(playlist.id) in ids:
+                item.setCheckState(0, Qt.CheckState.Checked)
+            self._check_matching_items(item, ids)
 
     def _show_error(self, message: str) -> None:
         """Log an error to both the Python logger and the log panel widget.

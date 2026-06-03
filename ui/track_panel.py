@@ -37,10 +37,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.import_controller import ImportPlan, ImportResult, TrackImportStatus
+
 logger = logging.getLogger(__name__)
 
 COLUMNS = ["TITLE", "ARTIST", "ALBUM", "BPM", "KEY", "DURATION", "RATING"]
 SUMMARY_COLUMNS = ["", "TITLE", "ARTIST", "BPM", "DURATION", "STATUS"]
+RESULT_COLUMNS = ["PLAYLIST", "IMPORTED", "SKIPPED", "FAILED"]
 
 _STATUS_COLORS = {
     "NEW": "#ADC6FF",
@@ -214,10 +217,92 @@ class TrackPanel(QWidget):
             result[track_id] = will_import
         return result
 
+    def populate_post_import_summary(
+        self,
+        result: "ImportResult",
+        plan: "ImportPlan",
+    ) -> None:
+        """Switch to post_import mode showing per-playlist result table (UX-03, D-01, D-02).
+
+        Args:
+            result: ImportResult with aggregate imported/skipped/failed counts.
+            plan: ImportPlan with selected_playlists, track_statuses, force_import_ids.
+        """
+        self._mode = "post_import"
+        self._summary_header.setVisible(True)
+
+        # D-02: hide Back button, relabel Confirm -> "Done"
+        self._back_btn.setVisible(False)
+        self._confirm_btn.setText("Done")
+
+        # Aggregate header label
+        self._backup_label.setText(
+            f"{result.imported_count} imported  |  "
+            f"{result.skipped_count} skipped  |  "
+            f"{result.failed_count} failed"
+        )
+
+        # Configure table for RESULT_COLUMNS
+        self.table.setSortingEnabled(False)
+        self.table.setColumnCount(len(RESULT_COLUMNS))
+        self.table.setHorizontalHeaderLabels(RESULT_COLUMNS)
+
+        hdr = self.table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for col in (1, 2, 3):
+            hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
+            self.table.setColumnWidth(col, 90)
+
+        self.table.setRowCount(0)
+
+        # One row per selected playlist
+        for playlist in plan.selected_playlists:
+            imported = 0
+            skipped = 0
+            failed = 0
+
+            for song in (getattr(playlist, "songs", None) or []):
+                track_id = song.content.track_id
+                status = plan.track_statuses.get(track_id)
+
+                if status is None:
+                    # No status entry — treat as imported (controller linked it)
+                    imported += 1
+                elif status == TrackImportStatus.SKIP:
+                    skipped += 1
+                elif status == TrackImportStatus.DUPLICATE:
+                    if track_id in plan.force_import_ids:
+                        imported += 1
+                    else:
+                        # DUPLICATE not force-imported: linked as existing entry
+                        imported += 1
+                else:
+                    # NEW (or unknown positive status)
+                    imported += 1
+
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+
+            self.table.setItem(row, 0, QTableWidgetItem(getattr(playlist, "name", "") or ""))
+
+            item_imp = QTableWidgetItem(str(imported))
+            item_imp.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.table.setItem(row, 1, item_imp)
+
+            item_skip = QTableWidgetItem(str(skipped))
+            item_skip.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.table.setItem(row, 2, item_skip)
+
+            item_fail = QTableWidgetItem(str(failed))
+            item_fail.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.table.setItem(row, 3, item_fail)
+
     def restore_browse_mode(self) -> None:
         """Switch back to the 7-column browse mode."""
         self._mode = "browse"
         self._summary_header.setVisible(False)
+        self._back_btn.setVisible(True)
+        self._confirm_btn.setText("Confirm Import")
         self.table.setColumnCount(len(COLUMNS))
         self.table.setHorizontalHeaderLabels(COLUMNS)
         self._apply_browse_column_sizes()
