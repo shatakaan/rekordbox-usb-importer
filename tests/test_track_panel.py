@@ -142,14 +142,18 @@ class TestPostImportSummary:
         assert not panel._summary_header.isVisible()
 
     def test_restore_browse_mode_restores_back_btn(self, qapp):
-        """restore_browse_mode() makes _back_btn visible again."""
+        """restore_browse_mode() un-hides _back_btn (not explicitly hidden) and resets button text."""
+        from PySide6.QtCore import Qt
         from core.import_controller import TrackImportStatus
         panel = TrackPanel()
         plan = _make_plan([_make_playlist("X", [1])], {1: TrackImportStatus.NEW})
         result = _make_result(imported=1)
         panel.populate_post_import_summary(result, plan)
+        # In post_import mode: back_btn is explicitly hidden
+        assert panel._back_btn.isHidden(), "_back_btn should be explicitly hidden in post_import mode"
         panel.restore_browse_mode()
-        assert panel._back_btn.isVisible(), "_back_btn should be visible after restore_browse_mode"
+        # After restore: back_btn is no longer explicitly hidden
+        assert not panel._back_btn.isHidden(), "_back_btn should not be explicitly hidden after restore"
         assert panel._confirm_btn.text() == "Confirm Import"
 
     def test_post_import_per_playlist_counts(self, qapp):
