@@ -18,6 +18,24 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 # hiddenimports ensures PyInstaller includes the sqlcipher3 package.
 # If the .so binary is still missing after build, add it explicitly to binaries= above.
 hiddenimports += ['sqlcipher3', 'pyrekordbox']
+hiddenimports += [
+    'sqlcipher3.dbapi2',
+    'pyrekordbox.anlz',
+    'pyrekordbox.anlz.file',
+    'pyrekordbox.anlz.structs',
+    'pyrekordbox.anlz.tags',
+    'pyrekordbox.config',
+    'pyrekordbox.db6',
+    'pyrekordbox.db6.database',
+    'pyrekordbox.db6.tables',
+    'pyrekordbox.db6.registry',
+    'pyrekordbox.db6.smartlist',
+    'pyrekordbox.utils',
+    'pyrekordbox.mysettings',
+    'pyrekordbox.mysettings.file',
+    'packaging',
+    'packaging.version',
+]
 
 a = Analysis(
     ['../main.py'],
@@ -64,12 +82,12 @@ app = BUNDLE(
     coll,
     name='PlaylistConverter.app',
     icon=None,
-    bundle_identifier='com.example.playlist-converter',
+    bundle_identifier='com.inevents-mainz.playlist-converter',
     info_plist={
-        'NSRequiresAquaSystemAppearance': False,   # D-09: follow macOS dark/light mode
+        'NSRequiresAquaSystemAppearance': False,
         'CFBundleDisplayName': 'Playlist Converter',
         'CFBundleShortVersionString': '0.1.0',
         'NSHighResolutionCapable': True,
-        'LSMinimumSystemVersion': '14.0',
+        'LSMinimumSystemVersion': '13.0',
     },
 )
