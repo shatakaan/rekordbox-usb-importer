@@ -119,7 +119,15 @@ Plans:
 2. User can close the app and reopen it without losing USB detection state or needing to re-select the USB stick
 3. User can download a .dmg, drag the .app to Applications, double-click it, and it runs on macOS without any "unidentified developer" block or installation of Python, Homebrew, or any dependency
 
-**Plans**: TBD
+**Plans:** 2 plans
+
+**Wave 1** *(no prior wave)*
+
+- [ ] 03-01-PLAN.md — Post-import summary (UX-03) + QSettings session persistence (UX-04): TrackPanel post_import mode, MainWindow `_save_session` / `_restore_session`, 9 unit tests
+
+**Wave 2** *(blocked on Wave 1)*
+
+- [ ] 03-02-PLAN.md — PyInstaller .app + dmgbuild .dmg (DIST-01, DIST-02): update app.spec (bundle ID, LSMinimumSystemVersion, hiddenimports), dmgbuild_settings.py, build.sh, human checkpoint
 
 **UI hint**: yes
 
@@ -132,4 +140,4 @@ Phases execute in numeric order: 1 → 2 → 3
 |-------|----------------|--------|-----------|
 | 1. USB Read Display + Bundling Spike | 6/6 | Complete    | 2026-06-02 |
 | 2. Full Import Pipeline | 5/5 | Complete    | 2026-06-03 |
-| 3. Polish + Distribution | 0/? | Not started | - |
+| 3. Polish + Distribution | 0/2 | Not started | - |
