@@ -460,6 +460,7 @@ class MainWindow(QMainWindow):
     def _on_import_back(self) -> None:
         """Handle Back button — return to browse view."""
         self.track_panel.restore_browse_mode()
+        self._repopulate_selected_playlist()
         try:
             self.track_panel.back_clicked.disconnect(self._on_import_back)
             self.track_panel.confirm_clicked.disconnect(self._on_confirm_import)
@@ -502,6 +503,7 @@ class MainWindow(QMainWindow):
             result.backup_path,
         )
         self.track_panel.restore_browse_mode()
+        self._repopulate_selected_playlist()
         try:
             self.track_panel.back_clicked.disconnect(self._on_import_back)
             self.track_panel.confirm_clicked.disconnect(self._on_confirm_import)
@@ -509,17 +511,34 @@ class MainWindow(QMainWindow):
             pass
         self.import_btn.setEnabled(True)
 
+    def _repopulate_selected_playlist(self) -> None:
+        """Re-populate the TrackPanel with the currently selected playlist."""
+        selected = self.playlist_panel.tree.selectedItems()
+        if selected:
+            playlist = selected[0].data(0, Qt.ItemDataRole.UserRole)
+            if playlist is not None:
+                self.track_panel.populate(playlist)
+
     def _get_checked_playlists(self, parent_item) -> list:
-        """Return all non-folder PlaylistRow objects whose checkbox is checked."""
+        """Return all checked PlaylistRow objects (any Attribute value).
+
+        A PlaylistRow is included if its checkbox is Checked, regardless of
+        whether it is flagged as a folder — PDB root containers can have
+        Attribute=1 (folder) while directly holding songs.
+        For PartiallyChecked items, recurse into children to find fully
+        checked entries.
+        """
         result = []
         for i in range(parent_item.childCount()):
             item = parent_item.child(i)
             playlist = item.data(0, Qt.ItemDataRole.UserRole)
-            if playlist is not None:
-                is_folder = getattr(playlist, "Attribute", 0) == 1
-                if not is_folder and item.checkState(0) == Qt.CheckState.Checked:
-                    result.append(playlist)
-            result.extend(self._get_checked_playlists(item))
+            state = item.checkState(0)
+            if playlist is not None and state == Qt.CheckState.Checked:
+                result.append(playlist)
+                # Still recurse — nested playlists inside a checked folder
+                # should also be importable individually
+            if state != Qt.CheckState.Unchecked:
+                result.extend(self._get_checked_playlists(item))
         return result
 
     def _show_error(self, message: str) -> None:

@@ -307,7 +307,9 @@ class ImportController:
         tag = anlz.get_tag(tag_key)
         cue_count = 0
 
-        for entry in tag.data.entries:
+        # pyrekordbox exposes entries directly on the tag object, not via .data
+        entries = getattr(tag, "entries", None) or getattr(tag, "cues", None) or []
+        for entry in entries:
             # PCOB entries have a status field; PCO2 entries are always enabled
             if tag_key == "PCOB" and entry.status.intvalue != 4:
                 continue
@@ -382,7 +384,20 @@ class ImportController:
                         result.skipped_count += 1
                         continue
                     if status == TrackImportStatus.DUPLICATE and track.track_id not in plan.force_import_ids:
-                        result.skipped_count += 1
+                        # Link existing library entry to the new playlist instead of creating a duplicate
+                        rel = track.file_path.lstrip("/")
+                        abs_path = (self.mount / rel).resolve()
+                        existing = check_duplicate(
+                            self.db, abs_path,
+                            track.title or "", track.artist_name or "",
+                            track.duration_secs or 0,
+                        )
+                        if existing:
+                            self.db.add_to_playlist(db_playlist, existing)
+                            result.imported_count += 1
+                            logger.info("Track '%s': linked existing entry to playlist", track.title)
+                        else:
+                            result.skipped_count += 1
                         continue
 
                     rel_path = track.file_path.lstrip("/")
@@ -399,9 +414,13 @@ class ImportController:
                             FileNameS=abs_path.stem[:255],
                         )
                         self.db.add_to_playlist(db_playlist, content)
-                        cue_count = self._import_cues(self.db, content, track, self.mount)
-                        logger.info("Track '%s': %d cues imported", track.title, cue_count)
                         result.imported_count += 1
+                        # Cue import is best-effort — failure does not fail the track
+                        try:
+                            cue_count = self._import_cues(self.db, content, track, self.mount)
+                            logger.info("Track '%s': %d cues imported", track.title, cue_count)
+                        except Exception:
+                            logger.warning("Track '%s': cue import failed — imported without cues", track.title)
                     except Exception:
                         logger.exception("Failed to import track '%s'", track.title)
                         result.failed_count += 1

@@ -240,7 +240,7 @@ def test_cue_import_from_ext(mock_rb6_db, usb_mount, make_track_row):
     entry2.comment = ""
 
     mock_tag = MagicMock()
-    mock_tag.data.entries = [entry1, entry2]
+    mock_tag.entries = [entry1, entry2]
 
     mock_anlz_ext = MagicMock()
     mock_anlz_ext.__contains__ = MagicMock(side_effect=lambda k: k == "PCO2")
@@ -308,7 +308,7 @@ def test_cue_import_dat_fallback(mock_rb6_db, usb_mount, make_track_row):
     disabled_entry.status.intvalue = 0  # disabled — must NOT be imported
 
     mock_tag = MagicMock()
-    mock_tag.data.entries = [enabled_entry, disabled_entry]
+    mock_tag.entries = [enabled_entry, disabled_entry]
 
     mock_anlz_dat = MagicMock()
     mock_anlz_dat.__contains__ = MagicMock(side_effect=lambda k: k == "PCOB")
@@ -414,7 +414,7 @@ def test_cue_kind_mapping(mock_rb6_db, usb_mount, make_track_row):
     hot_entry.comment = "Chorus"
 
     mock_tag = MagicMock()
-    mock_tag.data.entries = [memory_entry, hot_entry]
+    mock_tag.entries = [memory_entry, hot_entry]
 
     mock_anlz = MagicMock()
     mock_anlz.__contains__ = MagicMock(side_effect=lambda k: k == "PCO2")
