@@ -170,10 +170,7 @@ class MainWindow(QMainWindow):
         self.import_btn.setObjectName("primaryBtn")
         self.import_btn.setEnabled(False)
         self.import_btn.setFixedHeight(34)
-        self.import_btn.setToolTip(
-            "Import is not active in this version. "
-            "Select playlists to prepare for import."
-        )
+        self.import_btn.setToolTip("Select playlists to enable import")
         self.import_btn.setAccessibleName(
             "Import selected playlists button, currently disabled"
         )
