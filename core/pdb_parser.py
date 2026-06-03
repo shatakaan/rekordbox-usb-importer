@@ -202,11 +202,13 @@ def parse_track_row(page_data: bytes, rs: int) -> dict:
         dict mit id, title, artist_id, album_id, bpm, duration, rating, file_path.
     """
     rbase = rs + TRACK_CONTENT_OFFSET  # Pitfall 7: 8-Byte-Präfix
+    key_id   = struct.unpack_from("<I", page_data, rbase + 0x20)[0]  # → Keys table (research doc rbase+0x20)
     tempo    = struct.unpack_from("<I", page_data, rbase + 0x38)[0]
     album_id = struct.unpack_from("<I", page_data, rbase + 0x40)[0]
     artist_id = struct.unpack_from("<I", page_data, rbase + 0x44)[0]
     track_id = struct.unpack_from("<I", page_data, rbase + 0x48)[0]
     duration = struct.unpack_from("<H", page_data, rbase + 0x54)[0]
+    color_id = page_data[rbase + 0x58]  # research doc rbase+0x58
     rating   = page_data[rbase + 0x59]
 
     # String-Offsets: 21 × u16 ab rbase+0x5E (Pitfall 6: relativ zu rbase)
@@ -222,6 +224,8 @@ def parse_track_row(page_data: bytes, rs: int) -> dict:
         "artist_id":    artist_id,
         "album_id":     album_id,
         "bpm":          tempo / 100.0,
+        "key_id":       key_id if key_id else None,
+        "color_id":     color_id if color_id else None,
         "duration":     duration,
         "rating":       rating,
         "file_path":    filepath,
@@ -503,11 +507,13 @@ def parse_export_pdb(path: Path) -> tuple[list[PlaylistRow], dict[int, TrackRow]
             artist_name=artist_name,
             album_name=album_name,
             bpm=raw_track["bpm"],
-            key=None,  # Keys-Tabelle optional — TODO
+            key=None,  # human-readable key string not resolved from PDB binary (key_id is stored separately)
             duration_secs=raw_track["duration"],
             rating=raw_track["rating"],
-            file_path=raw_track.get("file_path", ""),  # relative USB path — used for import path construction (D-11)
-            analyze_path=raw_track.get("analyze_path"),  # str_offs[14] — cue point resolution (D-08, D-09)
+            file_path=raw_track.get("file_path", ""),
+            analyze_path=raw_track.get("analyze_path"),
+            key_id=raw_track.get("key_id"),
+            color_id=raw_track.get("color_id"),
         )
 
     # --- 6. PlaylistRow-Objekte bauen ---

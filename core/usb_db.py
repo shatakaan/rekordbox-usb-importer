@@ -45,6 +45,8 @@ class TrackRow:
     rating: int | None
     file_path: str = ""  # Relative path on USB (e.g. "/Contents/Artist/track.mp3") — used to build absolute import path (D-11)
     analyze_path: str | None = None  # ANLZ file path from PDB str_offs[14] — enables cue point resolution (D-08, D-09)
+    key_id: int | None = None    # PDB key index (1-24 Camelot); mapped to DjmdKey.ID on import
+    color_id: int | None = None  # PDB color tag (0=none, 1-8=colors); passed as ColorID to add_content
 
     # ------------------------------------------------------------------
     # Duck-typing-Properties (passend zu DjmdContent-ORM-Attributnamen)

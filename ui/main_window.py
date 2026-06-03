@@ -441,6 +441,17 @@ class MainWindow(QMainWindow):
                     plan.track_statuses[track.track_id] = status
                 self._import_tracks[track.track_id] = track
 
+        # Build full playlist-by-id map for folder hierarchy reconstruction
+        all_playlists: dict = {}
+
+        def _collect_all(playlists: list) -> None:
+            for p in playlists:
+                all_playlists[p.id] = p
+                _collect_all(getattr(p, "children", None) or [])
+
+        _collect_all(self._pdb_db.playlists)
+        plan.all_playlists_by_id = all_playlists
+
         self._import_plan = plan
 
         # Preview backup path (SAFE-03 / D-14)

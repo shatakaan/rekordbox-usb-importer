@@ -53,8 +53,9 @@ class ImportPlan:
     """
     selected_playlists: list = field(default_factory=list)
     mount: Path = field(default_factory=Path)
-    track_statuses: dict = field(default_factory=dict)  # track_id -> TrackImportStatus
-    force_import_ids: set = field(default_factory=set)  # track_ids to force-import despite DUPLICATE
+    track_statuses: dict = field(default_factory=dict)   # track_id -> TrackImportStatus
+    force_import_ids: set = field(default_factory=set)   # track_ids to force-import despite DUPLICATE
+    all_playlists_by_id: dict = field(default_factory=dict)  # id -> PlaylistRow, for hierarchy
 
 
 @dataclass
@@ -371,9 +372,43 @@ class ImportController:
 
         result = ImportResult(backup_path=backup_path)
 
+        # Build Camelot key_id → DjmdKey.ID lookup once (PDB key 1-12 = 1A-12A, 13-24 = 1B-12B)
+        key_lookup: dict[int, object] = {}
+        try:
+            from pyrekordbox.db6.tables import DjmdKey
+            _camelot = {i: f"{i}A" for i in range(1, 13)}
+            _camelot.update({i: f"{i - 12}B" for i in range(13, 25)})
+            for pdb_id, scale in _camelot.items():
+                row = self.db.query(DjmdKey).filter_by(ScaleName=scale).first()
+                if row:
+                    key_lookup[pdb_id] = row.ID
+        except Exception:
+            logger.debug("Key lookup build failed — KeyID will not be set on import")
+
+        # Folder cache: PlaylistRow.id → DjmdPlaylist object (avoids duplicates)
+        folder_cache: dict[int, object] = {}
+
+        def _get_or_create_folder(pid: int) -> object | None:
+            """Recursively create parent folders and return the db folder object."""
+            if pid in folder_cache:
+                return folder_cache[pid]
+            prow = plan.all_playlists_by_id.get(pid)
+            if prow is None:
+                return None
+            parent_obj = None
+            if prow.parent_id and prow.parent_id != 0:
+                parent_obj = _get_or_create_folder(prow.parent_id)
+            folder = self.db.create_playlist_folder(prow.name, parent=parent_obj)
+            folder_cache[pid] = folder
+            return folder
+
         try:
             for playlist_row in plan.selected_playlists:
-                db_playlist = self.db.create_playlist(playlist_row.name)
+                # Reconstruct folder hierarchy if playlist has a parent
+                parent_obj = None
+                if playlist_row.parent_id and playlist_row.parent_id != 0:
+                    parent_obj = _get_or_create_folder(playlist_row.parent_id)
+                db_playlist = self.db.create_playlist(playlist_row.name, parent=parent_obj)
                 logger.info("Writing playlist: %s", playlist_row.name)
 
                 for song in (playlist_row.songs or []):
@@ -405,14 +440,18 @@ class ImportController:
                     bpm_int = int(round(track.bpm * 100)) if track.bpm else 0
 
                     try:
-                        content = self.db.add_content(
-                            path=abs_path,
+                        add_kwargs: dict = dict(
                             Title=track.title or "",
                             BPM=bpm_int,
                             Length=track.duration_secs or 0,
                             Rating=track.rating or 0,
                             FileNameS=abs_path.stem[:255],
                         )
+                        if track.color_id:
+                            add_kwargs["ColorID"] = track.color_id
+                        if track.key_id and track.key_id in key_lookup:
+                            add_kwargs["KeyID"] = key_lookup[track.key_id]
+                        content = self.db.add_content(path=abs_path, **add_kwargs)
                         self.db.add_to_playlist(db_playlist, content)
                         result.imported_count += 1
                         # Cue import is best-effort — failure does not fail the track
