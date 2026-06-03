@@ -14,7 +14,7 @@ Three phases gate-check the two biggest technical unknowns before any data is wr
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: USB Read Display + Bundling Spike** - Validate core unknowns and deliver a working read-only USB browser as a .app (gap closure in progress) (completed 2026-06-02)
-- [ ] **Phase 2: Full Import Pipeline** - Complete safe import with all metadata, cue points, conflict handling, and write-safety guarantees
+- [x] **Phase 2: Full Import Pipeline** - Complete safe import with all metadata, cue points, conflict handling, and write-safety guarantees
 - [ ] **Phase 3: Polish + Distribution** - Summary log, state persistence, and distributable notarized .dmg
 
 ## Phase Details
@@ -131,5 +131,5 @@ Phases execute in numeric order: 1 → 2 → 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. USB Read Display + Bundling Spike | 6/6 | Complete    | 2026-06-02 |
-| 2. Full Import Pipeline | 1/5 | In Progress | - |
+| 2. Full Import Pipeline | 5/5 | Complete    | 2026-06-03 |
 | 3. Polish + Distribution | 0/? | Not started | - |
