@@ -27,9 +27,31 @@ rsync -a --delete \
   --exclude "__pycache__/" \
   --exclude "*.pyc" \
   --exclude "*.pyo" \
-  --exclude "build/app/" \
+  --exclude "build/app/
+build/PlaylistConverter/" \
   --exclude ".claude/worktrees/" \
   "$PROJECT/" "$MIRROR/"
+
+# Restore mirror's own .gitignore (rsync overwrites it with the main project's)
+cat > "$MIRROR/.gitignore" << 'MIRRORIGNORE'
+# Python virtual env (too large, recreatable)
+.venv/
+
+# Build output (in GitHub Releases)
+dist/
+__pycache__/
+*.pyc
+*.pyo
+build/app/
+build/PlaylistConverter/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Worktrees (temp Claude build dirs)
+.claude/worktrees/
+MIRRORIGNORE
 
 cd "$MIRROR"
 
