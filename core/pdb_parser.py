@@ -42,7 +42,7 @@ TABLE_PLAYLIST_ENTRIES = 8
 TABLE_START_OFF = 0x1C   # Pitfall 3: NICHT 0x14; Stride 16 NICHT 12
 
 MAX_FILE_SIZE = 50 * 1024 * 1024   # 50 MB — T-05-02
-MAX_ENTRIES = 10_000               # T-05-02
+MAX_ENTRIES = 200_000              # T-05-02: raised from 10k — real Rekordbox libraries exceed 10k tracks
 
 
 # ---------------------------------------------------------------------------
