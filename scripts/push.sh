@@ -27,8 +27,8 @@ rsync -a --delete \
   --exclude "__pycache__/" \
   --exclude "*.pyc" \
   --exclude "*.pyo" \
-  --exclude "build/app/
-build/PlaylistConverter/" \
+  --exclude "build/app/" \
+  --exclude "build/PlaylistConverter/" \
   --exclude ".claude/worktrees/" \
   "$PROJECT/" "$MIRROR/"
 
