@@ -81,7 +81,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='PlaylistConverter.app',
-    icon=None,
+    icon='../assets/PlaylistConverter.icns',
     bundle_identifier='com.inevents-mainz.playlist-converter',
     info_plist={
         'NSRequiresAquaSystemAppearance': False,
