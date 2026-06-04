@@ -22,6 +22,7 @@ echo "  ✓ Public repo up to date"
 echo "▶ Syncing private mirror..."
 rsync -a --delete \
   --exclude ".git/" \
+  --exclude ".venv/" \
   --exclude "dist/" \
   --exclude "__pycache__/" \
   --exclude "*.pyc" \
