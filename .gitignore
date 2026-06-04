@@ -1,9 +1,24 @@
-.planning/
+# Python
 .venv/
 __pycache__/
 *.pyc
 *.pyo
+
+# Build artefacts
 build/PlaylistConverter/
 build/app/
 dist/
 *.spec.bak
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Claude Code
+.claude/
+
+# Design assets (private mirror only)
+Design Ideen/
+
+# GSD planning (force-tracked via git add -f, not auto-tracked)
+.planning/
