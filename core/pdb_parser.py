@@ -153,7 +153,7 @@ def decode_devicesql_string(data: bytes, pos: int) -> tuple[str, int]:
         if raw_len == 0:
             return ("", 1)
         actual_len = raw_len - 1
-        text = data[pos + 1: pos + 1 + actual_len].decode("ascii", errors="replace")
+        text = data[pos + 1: pos + 1 + actual_len].decode("latin-1", errors="replace")
         return (text, 1 + raw_len)
 
     elif flag == 0x40:
@@ -161,7 +161,7 @@ def decode_devicesql_string(data: bytes, pos: int) -> tuple[str, int]:
         if pos + 3 > len(data):
             return ("", 1)
         str_len = struct.unpack_from("<H", data, pos + 1)[0]
-        text = data[pos + 3: pos + 3 + str_len].decode("ascii", errors="replace").rstrip("\x00")
+        text = data[pos + 3: pos + 3 + str_len].decode("latin-1", errors="replace").rstrip("\x00")
         return (text, 3 + str_len)
 
     elif flag == 0x90:
@@ -479,22 +479,35 @@ def parse_export_pdb(path: Path) -> tuple[list[PlaylistRow], dict[int, TrackRow]
         raise PdbParseError(f"Error parsing PlaylistTree table: {exc}") from exc
 
     # --- 4. PlaylistEntries lesen ---
-    entries_by_playlist: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    # Collect both possible field orderings in one pass, then auto-detect which
+    # matches playlist_nodes — Pioneer USB format varies between devices:
+    #   order A: (entry_index, playlist_id, track_id)  — confirmed on CDJ-2000NXS2
+    #   order B: (entry_index, track_id, playlist_id)  — original Kaitai spec
+    _raw_entries_a: dict = defaultdict(list)   # key = field2
+    _raw_entries_b: dict = defaultdict(list)   # key = field3
     try:
         for page_data, rs in iter_table_rows(data, TABLE_PLAYLIST_ENTRIES):
             try:
-                e = parse_playlist_entry_row(page_data, rs)
-                # Filter stale/sentinel entries (playlist_id=0 or track_id=0 are invalid)
-                if e["playlist_id"] == 0 or e["track_id"] == 0:
-                    continue
-                # Pitfall 10: playlist_id ohne Knoten in playlist_nodes -> graceful ignorieren
-                entries_by_playlist[e["playlist_id"]].append(
-                    (e["entry_index"], e["track_id"])
-                )
+                ei, f2, f3 = struct.unpack_from("<III", page_data, rs)
+                if f2 != 0 and f3 != 0:
+                    _raw_entries_a[f2].append((ei, f3))
+                    _raw_entries_b[f3].append((ei, f2))
             except struct.error as exc:
                 logger.debug("Skipping playlist entry row at rs=%d: %s", rs, exc)
     except struct.error as exc:
         raise PdbParseError(f"Error parsing PlaylistEntries table: {exc}") from exc
+
+    # Pick the ordering whose keys match more playlist_nodes IDs
+    _matches_a = sum(1 for pid in _raw_entries_a if pid in playlist_nodes)
+    _matches_b = sum(1 for pid in _raw_entries_b if pid in playlist_nodes)
+    if _matches_a >= _matches_b:
+        entries_by_playlist: dict = dict(_raw_entries_a)
+        logger.debug("Playlist entry order: A (playlist_id=field2), matches=%d", _matches_a)
+    else:
+        entries_by_playlist = dict(_raw_entries_b)
+        logger.info("Playlist entry order: B (playlist_id=field3) auto-detected, matches=%d vs %d", _matches_b, _matches_a)
+    if not entries_by_playlist:
+        logger.warning("No playlist entries found — all playlists will show empty")
 
     # --- 5. TrackRow-Objekte bauen ---
     tracks: dict[int, TrackRow] = {}
@@ -542,8 +555,8 @@ def parse_export_pdb(path: Path) -> tuple[list[PlaylistRow], dict[int, TrackRow]
     for playlist_id, entries_list in entries_by_playlist.items():
         if playlist_id not in playlist_rows:
             # Pitfall 10: playlist_id ohne Knoten -> graceful ignorieren
-            logger.debug(
-                "Ignoring %d entries for unknown playlist_id=%d",
+            logger.warning(
+                "Ignoring %d entries for unknown playlist_id=%d (no matching node)",
                 len(entries_list), playlist_id,
             )
             continue
